@@ -1,0 +1,376 @@
+// ModShop Database Schema
+// The financial layer for the mod creator economy
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User accounts - both creators and buyers
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  password      String
+  username      String    @unique
+  displayName   String?
+  avatar        String?
+  bio           String?
+  role          UserRole  @default(BUYER)
+  stripeId      String?   @unique
+  paystackId    String?
+  emailVerified Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  // Creator relations
+  store         Store?
+  mods          Mod[]
+  reviews       Review[]
+  purchases     Purchase[]
+  
+  // Notifications
+  notifications Notification[]
+  
+  @@index([email])
+  @@index([username])
+}
+
+enum UserRole {
+  BUYER
+  CREATOR
+  ADMIN
+}
+
+// Creator storefront
+model Store {
+  id            String    @id @default(uuid())
+  userId        String    @unique
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name          String
+  slug          String    @unique
+  description   String?
+  logo          String?
+  banner        String?
+  socialLinks   Json?     // { twitter, youtube, discord, etc }
+  isActive      Boolean   @default(true)
+  subscription  SubscriptionTier @default(FREE)
+  subscriptionExpires DateTime?
+  totalSales    Decimal   @default(0) @db.Decimal(10, 2)
+  totalRevenue  Decimal   @default(0) @db.Decimal(10, 2)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  mods          Mod[]
+  analytics     StoreAnalytics[]
+  
+  @@index([slug])
+  @@index([userId])
+}
+
+enum SubscriptionTier {
+  FREE
+  PRO
+  ENTERPRISE
+}
+
+// Mod listings
+model Mod {
+  id            String    @id @default(uuid())
+  storeId       String
+  store         Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  creatorId     String
+  creator       User      @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  
+  title         String
+  slug          String
+  description   String
+  longDescription String? @db.Text
+  categoryId    String?
+  category      Category? @relation(fields: [categoryId], references: [id])
+  
+  // Pricing
+  price         Decimal   @db.Decimal(10, 2)
+  currency      String    @default("USD")
+  isFree        Boolean   @default(false)
+  discountPercent Int?
+  discountEnds  DateTime?
+  
+  // Files & Versions
+  currentVersion String   @default("1.0.0")
+  versions       ModVersion[]
+  
+  // Media
+  images        String[]  // Array of image URLs
+  videoUrl      String?
+  
+  // Metadata
+  tags          String[]
+  gameTitle     String
+  gameCategory  String?
+  platform      String[]  // PC, Console, etc
+  requirements  String?   @db.Text
+  
+  // Stats
+  downloads     Int       @default(0)
+  sales         Int       @default(0)
+  revenue       Decimal   @default(0) @db.Decimal(10, 2)
+  rating        Float     @default(0)
+  reviewCount   Int       @default(0)
+  viewCount     Int       @default(0)
+  
+  // Status
+  status        ModStatus @default(PENDING)
+  isFeatured    Boolean   @default(false)
+  isPublished   Boolean   @default(false)
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  reviews       Review[]
+  purchases     Purchase[]
+  analytics     ModAnalytics[]
+  
+  @@unique([storeId, slug])
+  @@index([slug])
+  @@index([categoryId])
+  @@index([status])
+  @@index([isPublished])
+}
+
+enum ModStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+// Mod versions for update management
+model ModVersion {
+  id            String    @id @default(uuid())
+  modId         String
+  mod           Mod       @relation(fields: [modId], references: [id], onDelete: Cascade)
+  
+  version       String
+  changelog     String?   @db.Text
+  fileUrl       String
+  fileHash      String?   // SHA256 for integrity
+  fileSize      BigInt
+  downloadCount Int       @default(0)
+  
+  isCurrent     Boolean   @default(false)
+  isPublished   Boolean   @default(false)
+  
+  createdAt     DateTime  @default(now())
+  
+  @@index([modId])
+  @@index([version])
+}
+
+// Categories for mods
+model Category {
+  id            String    @id @default(uuid())
+  name          String
+  slug          String    @unique
+  description   String?
+  icon          String?
+  parentId      String?
+  parent        Category? @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children      Category[] @relation("CategoryHierarchy")
+  
+  mods          Mod[]
+  
+  @@index([slug])
+}
+
+// Reviews and ratings
+model Review {
+  id            String    @id @default(uuid())
+  modId         String
+  mod           Mod       @relation(fields: [modId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  rating        Int       // 1-5
+  title         String?
+  content       String    @db.Text
+  isVerified    Boolean   @default(false) // Verified purchase
+  
+  helpfulCount  Int       @default(0)
+  replies       ReviewReply[]
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  @@unique([modId, userId])
+  @@index([modId])
+  @@index([userId])
+}
+
+model ReviewReply {
+  id            String    @id @default(uuid())
+  reviewId      String
+  review        Review    @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  userId        String
+  content       String    @db.Text
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+// Purchases and orders
+model Purchase {
+  id            String    @id @default(uuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  modId         String
+  mod           Mod       @relation(fields: [modId], references: [id])
+  
+  orderId       String    @unique
+  amount        Decimal   @db.Decimal(10, 2)
+  currency      String
+  platformFee   Decimal   @db.Decimal(10, 2) // 10% or 15%
+  creatorPayout Decimal   @db.Decimal(10, 2)
+  
+  paymentStatus PaymentStatus @default(PENDING)
+  paymentMethod String?
+  paystackRef   String?
+  
+  // Delivery
+  downloadUrl   String?
+  downloadExpires DateTime?
+  isDelivered   Boolean   @default(false)
+  
+  createdAt     DateTime  @default(now())
+  
+  @@index([userId])
+  @@index([modId])
+  @@index([orderId])
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+// Analytics for stores
+model StoreAnalytics {
+  id            String    @id @default(uuid())
+  storeId       String
+  store         Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  
+  date          DateTime
+  views         Int       @default(0)
+  visitors      Int       @default(0)
+  sales         Int       @default(0)
+  revenue       Decimal   @default(0) @db.Decimal(10, 2)
+  
+  createdAt     DateTime  @default(now())
+  
+  @@unique([storeId, date])
+  @@index([storeId])
+}
+
+// Analytics for mods
+model ModAnalytics {
+  id            String    @id @default(uuid())
+  modId         String
+  mod           Mod       @relation(fields: [modId], references: [id], onDelete: Cascade)
+  
+  date          DateTime
+  views         Int       @default(0)
+  downloads     Int       @default(0)
+  sales         Int       @default(0)
+  revenue       Decimal   @default(0) @db.Decimal(10, 2)
+  
+  createdAt     DateTime  @default(now())
+  
+  @@unique([modId, date])
+  @@index([modId])
+}
+
+// Notifications
+model Notification {
+  id            String    @id @default(uuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  type          NotificationType
+  title         String
+  message       String    @db.Text
+  data          Json?
+  isRead        Boolean   @default(false)
+  
+  createdAt     DateTime  @default(now())
+  
+  @@index([userId])
+  @@index([isRead])
+}
+
+enum NotificationType {
+  SALE
+  PURCHASE
+  REVIEW
+  UPDATE
+  PAYOUT
+  SYSTEM
+}
+
+// API Keys for creators
+model ApiKey {
+  id            String    @id @default(uuid())
+  userId        String
+  name          String
+  key           String    @unique
+  permissions   String[]
+  lastUsed      DateTime?
+  expiresAt     DateTime?
+  
+  createdAt     DateTime  @default(now())
+  
+  @@index([userId])
+  @@index([key])
+}
+
+// Payout records
+model Payout {
+  id            String    @id @default(uuid())
+  storeId       String
+  store         Store     @relation(fields: [storeId], references: [id])
+  
+  amount        Decimal   @db.Decimal(10, 2)
+  currency      String
+  status        PayoutStatus @default(PENDING)
+  method        String
+  accountInfo   Json
+  
+  paystackTransferCode String?
+  processedAt   DateTime?
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  @@index([storeId])
+  @@index([status])
+}
+
+enum PayoutStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+// System settings
+model Setting {
+  key           String    @id
+  value         String    @db.Text
+  description   String?
+  updatedAt     DateTime  @updatedAt
+}
